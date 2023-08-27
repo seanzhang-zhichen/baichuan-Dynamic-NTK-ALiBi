@@ -63,9 +63,34 @@ def build_dynamically_alibi_tensor(num_heads, max_pos) -> torch.Tensor:
     return slopes
 
 
+def build_ntk_alibi_tensor(num_heads: int) -> torch.Tensor:
+    """Psuedo code for NTK-ALiBi."""
+    a = 2.0   # ntk step 1: scale ratio a = inference_length / pretraining_length
+    scale = a ** (1.0 / (num_heads-1))  # ntk step 2: coefficient b, for computation convenience
+    closest_power_of_2 = 2 ** math.floor(math.log2(num_heads))
+    base = torch.tensor(
+        2 ** (-(2 ** -(math.log2(closest_power_of_2) - 3))), dtype=torch.float32
+    )
+    base /= scale  # ntk step 3: divide b to alibi base
+    powers = torch.arange(1, 1 + closest_power_of_2, dtype=torch.int32)
+    slopes = torch.pow(base, powers)
+    slopes *= scale  # ntk step 4: fix alibi bias m_h by multiplying b
+
+    if closest_power_of_2 != num_heads:  # todo: fix ntk-alibi when num_heads is not power of 2
+        extra_base = torch.tensor(
+            2 ** (-(2 ** -(math.log2(2 * closest_power_of_2) - 3))), dtype=torch.float32
+        )
+        num_remaining_heads = min(closest_power_of_2, num_heads - closest_power_of_2)
+        extra_powers = torch.arange(1, 1 + 2 * num_remaining_heads, 2, dtype=torch.int32)
+        slopes = torch.cat([slopes, torch.pow(extra_base, extra_powers)], dim=0)
+
+    return slopes
+
 def _gen_alibi_mask(n_head, max_pos):
     """used in inference only"""
     slopes = torch.Tensor(build_dynamically_alibi_tensor(n_head, max_pos))
+    # slopes = torch.Tensor(build_ntk_alibi_tensor(n_head))
+    
     alibi = slopes.unsqueeze(1).unsqueeze(1) * torch.arange(max_pos).unsqueeze(0).unsqueeze(0).expand(
         n_head, -1, -1)
     alibi = alibi.view(n_head, 1, max_pos).to(torch.float16)
